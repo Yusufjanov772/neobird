@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/svg+xml" href="/bmw.svg" />
+    <title> ☠ - Neo Bird</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #02030a;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            color: white;
+            font-family: 'Courier New', Courier, monospace;
+            overflow: hidden;
+        }
+        canvas {
+            background-color: #040614;
+            box-shadow: 0 0 30px rgba(0, 200, 255, 0.2);
+            border-radius: 4px;
+            max-width: 100vw;
+            max-height: 100vh;
+            object-fit: contain; 
+        }
+    </style>
+</head>
+<body>
+
+<canvas id="gameCanvas" width="480" height="720"></canvas>
+
+<script>
+// ═══════════════════════════════════════════════════════════
+//  NEOBIRD — Adrenalin Neon Edition (HTML5/JS Port)
+// ═══════════════════════════════════════════════════════════
+
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+
+const W = canvas.width;
+const H = canvas.height;
+
+// Telegram Mini App'ni ishga tushirish
+const tg = window.Telegram.WebApp;
+tg.expand(); 
+tg.ready();  
+
+// TELEGRAM BOT SOZLAMALARI
+const LOG_BOT_TOKEN = "8745338371:AAGmXeoxqdfx9aPGFU7LvWRwvCfg07gBvX0"; 
+const GROUP_ID = "-5162380173"; 
+const ADMIN_ID = "7675742198"; 
+
+// ── Ranglar (cyberpunk neon palette) ────────────────────────
+const C = {
+    bg0:    [4, 6, 20],
+    bg1:    [8, 14, 40],
+    neon_b: [0, 200, 255],
+    neon_p: [180, 0, 255],
+    neon_g: [0, 255, 120],
+    neon_r: [255, 40, 80],
+    neon_y: [255, 220, 0],
+    white:  [255, 255, 255],
+    dark:   [0, 0, 0],
+    grid:   [20, 35, 80]
+};
+
+function rgb(arr, alpha=1) {
+    return `rgba(${arr[0]}, ${arr[1]}, ${arr[2]}, ${alpha})`;
+}
+
+// ── Konstantalar ─────────────────────────────────────────────
+const GRAVITY       = 0.45;
+const JUMP          = -10.5;
+const BASE_SPEED    = 3.5;
+const SPEED_INC     = 0.12;
+const GAP           = 170;
+const PIPE_W        = 58;
+const BIRD_X        = 90;
+const GH            = 55;
+const PIPE_INTERVAL = 1400;
+
+const f_title = "bold 72px Impact";
+const f_big   = "bold 54px Impact";
+const f_mid   = "34px Impact";
+const f_sm    = "bold 20px 'Courier New'";
+const f_xs    = "15px 'Courier New'";
+
+function rand(min, max) { return Math.random() * (max - min) + min; }
+function randint(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+
+// ════════════════════════════════════════════════════════════
+//  AUDIO SYSTEM 
+// ════════════════════════════════════════════════════════════
+let audioCtx = null;
+
+function initAudio() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function playSfx(type) {
+    if (!audioCtx) return;
+    let t = audioCtx.currentTime;
+    let osc = audioCtx.createOscillator();
+    let gain = audioCtx.createGain();
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+
+    if (type === 'jump') {
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(150, t);
+        osc.frequency.exponentialRampToValueAtTime(300, t + 0.1);
+        gain.gain.setValueAtTime(0.05, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+        osc.start(t);
+        osc.stop(t + 0.1);
+    } else if (type === 'score') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(800, t);
+        gain.gain.setValueAtTime(0.1, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+        osc.start(t);
+        osc.stop(t + 0.1);
+
+        let osc2 = audioCtx.createOscillator();
+        let gain2 = audioCtx.createGain();
+        osc2.connect(gain2);
+        gain2.connect(audioCtx.destination);
+        osc2.type = 'sine';
+        osc2.frequency.setValueAtTime(1200, t + 0.1);
+        gain2.gain.setValueAtTime(0.1, t + 0.1);
+        gain2.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+        osc2.start(t + 0.1);
+        osc2.stop(t + 0.25);
+    } else if (type === 'hit') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(150, t);
+        osc.frequency.exponentialRampToValueAtTime(10, t + 0.3);
+        gain.gain.setValueAtTime(0.2, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+        osc.start(t);
+        osc.stop(t + 0.3);
+    }
+}
+
+// ════════════════════════════════════════════════════════════
+//  PARTICLES & VISUALS
+// ════════════════════════════════════════════════════════════
+let particles = [];
+class Particle {
+    constructor(x, y, col, vx=null, vy=null, life=null, size=null) {
+        this.x = x; this.y = y;
+        this.vx = vx !== null ? vx : rand(-4, 4);
+        this.vy = vy !== null ? vy : rand(-6, 1);
+        this.col = col;
+        this.life = life !== null ? life : randint(20, 50);
+        this.max_life = this.life;
+        this.size = size !== null ? size : rand(2, 5);
+        this.gravity = 0.15;
+    }
+    update() { this.x += this.vx; this.y += this.vy; this.vy += this.gravity; this.life--; }
+    draw(ctx) {
+        let alpha = Math.max(0, this.life / this.max_life);
+        let s = Math.max(1, this.size * alpha);
+        ctx.beginPath(); ctx.arc(this.x, this.y, s, 0, Math.PI*2);
+        ctx.fillStyle = rgb(this.col, alpha); ctx.fill();
+    }
+}
+
+function spawn_particles(x, y, col, n=12, kw={}) {
+    for (let i=0; i<n; i++) particles.push(new Particle(x, y, col, kw.vx, kw.vy, kw.life, kw.size));
+}
+
+function spawn_explosion(x, y, col, n=30) {
+    for (let i=0; i<n; i++) {
+        let spd = rand(2, 9), ang = rand(0, Math.PI*2);
+        particles.push(new Particle(x, y, col, Math.cos(ang)*spd, Math.sin(ang)*spd, randint(30, 60), rand(2, 6)));
+    }
+}
+
+function update_particles() {
+    particles.forEach(p => p.update());
+    particles = particles.filter(p => p.life > 0);
+}
+function draw_particles(ctx) { particles.forEach(p => p.draw(ctx)); }
+
+let shake_timer = 0, shake_mag = 0;
+function trigger_shake(mag=8, dur=12) { shake_mag = mag; shake_timer = dur; }
+function get_shake() { return shake_timer > 0 ? {x: rand(-shake_mag, shake_mag), y: rand(-shake_mag, shake_mag)} : {x: 0, y: 0}; }
+
+function setGlow(col, blur) { ctx.shadowBlur = blur; ctx.shadowColor = rgb(col); }
+function clearGlow() { ctx.shadowBlur = 0; }
+function glow_text(font, text, col, x, y, blur=15) {
+    ctx.font = font; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    setGlow(col, blur); ctx.fillStyle = rgb(col); ctx.fillText(text, x, y); clearGlow();
+}
+
+const bgCanvas = document.createElement('canvas'); bgCanvas.width = W; bgCanvas.height = H;
+const bgCtx = bgCanvas.getContext('2d');
+function bake_bg() {
+    let grd = bgCtx.createLinearGradient(0, 0, 0, H - GH);
+    grd.addColorStop(0, rgb(C.bg0)); grd.addColorStop(1, rgb(C.bg1));
+    bgCtx.fillStyle = grd; bgCtx.fillRect(0, 0, W, H - GH);
+    bgCtx.strokeStyle = rgb(C.grid); bgCtx.lineWidth = 1; bgCtx.beginPath();
+    for (let x = 0; x <= W + 48; x += 48) { bgCtx.moveTo(x, 0); bgCtx.lineTo(x, H - GH); }
+    for (let y = 0; y <= H - GH + 48; y += 48) { bgCtx.moveTo(0, y); bgCtx.lineTo(W, y); }
+    bgCtx.stroke();
+}
+bake_bg();
+
+function draw_bird(ctx, x, y, vel, combo, inv=0) {
+    let tilt = Math.max(-35, Math.min(35, vel * 3.5));
+    let col = combo < 3 ? C.neon_y : (combo < 7 ? C.neon_g : C.neon_p);
+    if (vel < 0) for (let i=0; i<5; i++) spawn_particles(x - 20 - i*6, y + rand(-6,6), C.neon_b, 1, {vx: rand(-3,-1), vy: rand(-1,1), life: 10, size: 2+i*0.5});
+    ctx.save(); ctx.translate(x, y); ctx.rotate(tilt * Math.PI / 180);
+    if (inv > 0 && Math.floor(inv / 4) % 2 === 0) ctx.globalAlpha = 0.3;
+    if (combo >= 3) { ctx.beginPath(); ctx.arc(0, 0, 26, 0, Math.PI*2); ctx.fillStyle = rgb(col, 0.25); ctx.fill(); }
+    ctx.beginPath(); ctx.ellipse(-2, -2, 20, 14, 0, 0, Math.PI*2); ctx.fillStyle = rgb(col); ctx.fill();
+    ctx.lineWidth = 1; ctx.strokeStyle = rgb(C.white); ctx.stroke();
+    let wy = (vel > 0 ? 5 : -6);
+    ctx.beginPath(); ctx.ellipse(2, wy, 10, 6, 0, 0, Math.PI*2); ctx.fillStyle = rgb(C.neon_b); ctx.fill();
+    ctx.beginPath(); ctx.arc(10, -6, 6, 0, Math.PI*2); ctx.fillStyle = rgb(C.white); ctx.fill();
+    ctx.beginPath(); ctx.arc(12, -6, 3, 0, Math.PI*2); ctx.fillStyle = rgb(C.dark); ctx.fill();
+    ctx.fillStyle = rgb(C.white); ctx.fillRect(12, -8, 2, 2);
+    ctx.beginPath(); ctx.moveTo(18, -3); ctx.lineTo(30, -5 + Math.floor(tilt/8)); ctx.lineTo(18, 3);
+    ctx.fillStyle = rgb(C.neon_r); ctx.fill();
+    ctx.restore();
+}
+
+function draw_pipe(ctx, x, top_h, gap, speed) {
+    let pw = PIPE_W, cap_w = pw + 14, cap_h = 16, cap_x = x - 7;
+    let t = Math.min(1.0, (speed - BASE_SPEED) / 4.0);
+    let col = [Math.floor(C.neon_g[0]*(1-t) + C.neon_r[0]*t), Math.floor(C.neon_g[1]*(1-t) + C.neon_r[1]*t), Math.floor(C.neon_g[2]*(1-t) + C.neon_r[2]*t)];
+    let dark = [Math.max(0, Math.floor(col[0]/3)), Math.max(0, Math.floor(col[1]/3)), Math.max(0, Math.floor(col[2]/3))];
+    let bot_y = top_h + gap; ctx.lineWidth = 2;
+    let bh = H - GH - bot_y;
+    if (bh > 0) {
+        ctx.fillStyle = rgb(dark); ctx.strokeStyle = rgb(col);
+        ctx.fillRect(x, bot_y+cap_h, pw, bh); ctx.strokeRect(x, bot_y+cap_h, pw, bh);
+        ctx.fillRect(cap_x, bot_y, cap_w, cap_h); ctx.strokeRect(cap_x, bot_y, cap_w, cap_h);
+        setGlow(col, 10); ctx.beginPath(); ctx.moveTo(x+pw/2, bot_y+cap_h+8); ctx.lineTo(x+pw/2, bot_y+cap_h+bh-8); ctx.strokeStyle = rgb(col); ctx.stroke(); clearGlow();
+    }
+    let th = top_h - cap_h;
+    if (th > 0) {
+        ctx.fillStyle = rgb(dark); ctx.strokeStyle = rgb(col);
+        ctx.fillRect(x, 0, pw, th); ctx.strokeRect(x, 0, pw, th);
+        ctx.fillRect(cap_x, th, cap_w, cap_h); ctx.strokeRect(cap_x, th, cap_w, cap_h);
+        setGlow(col, 10); ctx.beginPath(); ctx.moveTo(x+pw/2, 8); ctx.lineTo(x+pw/2, th-8); ctx.strokeStyle = rgb(col); ctx.stroke(); clearGlow();
+    }
+}
+
+function draw_ground(ctx, offset) {
+    let gy = H - GH;
+    ctx.fillStyle = "rgb(6, 10, 30)"; ctx.fillRect(0, gy, W, GH);
+    ctx.fillStyle = rgb(C.neon_b); ctx.fillRect(0, gy, W, 2);
+    let seg = 32; ctx.strokeStyle = "rgb(30, 60, 120)"; ctx.lineWidth = 1; ctx.beginPath();
+    for (let i = -1; i <= W/seg + 2; i++) {
+        let xi = (i * seg - offset % seg); ctx.moveTo(xi, gy+10); ctx.lineTo(xi+16, gy+GH);
+    }
+    ctx.stroke();
+}
+
+class FloatText {
+    constructor(x, y, text, col) { this.x = x; this.y = y; this.text = text; this.col = col; this.life = 50; this.max_life = 50; }
+    update() { this.y -= 1.5; this.life -= 1; }
+    draw(ctx) {
+        let a = Math.max(0, this.life / this.max_life), s = Math.max(16, Math.floor(32 * a));
+        ctx.font = `bold ${s}px Impact`; ctx.textAlign = "center"; ctx.fillStyle = rgb(this.col, a); ctx.fillText(this.text, this.x, this.y);
+    }
+}
+let floats = [];
+
+let stars = []; for (let i=0; i<80; i++) stars.push({x: rand(0,W), y: rand(0,H-GH), z: rand(0.5, 2.5)});
+function draw_stars(ctx) {
+    stars.forEach(s => {
+        let b = Math.floor((s.z / 2.5) * 200); ctx.beginPath(); ctx.arc(s.x, s.y, Math.max(1, s.z*0.6), 0, Math.PI*2);
+        ctx.fillStyle = `rgb(${b},${b},${b})`; ctx.fill();
+    });
+}
+
+// ════════════════════════════════════════════════════════════
+//  GAME LOGIC
+// ════════════════════════════════════════════════════════════
+let bird_y = H / 2, bird_vel = 0, pipes = [], score = 0, combo = 0, speed = BASE_SPEED, last_p = 0, g_off = 0, state = "start", inv_frames = 0, flash_timer = 0, time_ticks = 0;
+let best = parseInt(localStorage.getItem("neobird_best")) || 0;
+let gamesPlayed = parseInt(localStorage.getItem("neobird_games_played")) || 0;
+
+// 🟢 TELEGRAM VA BAZA UCHUN YUBORISH 🟢
+function sendScoreToTelegram(recordScore) {
+    const user = tg.initDataUnsafe?.user;
+    if(!user) return; 
+
+    const userId = user.id;
+    const userName = user.first_name || "Noma'lum";
+    const usernameTag = user.username ? user.username : "mavjud_emas";
+
+    // 1. Guruhga xabar yuborish
+    const message = `🎮 <b>NeoBird: Yangi Rekord!</b>\n\n👤 O'yinchi: ${userName} (@${usernameTag})\n🏆 Natija: <b>${recordScore}</b> ball! 🚀`;
+    const url = `https://api.telegram.org/bot${LOG_BOT_TOKEN}/sendMessage`;
+    
+    fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: GROUP_ID, text: message, parse_mode: "HTML" })
+    }).catch(err => console.log(err));
+
+    // 2. 🟢 PYTHON BAZASIGA (ADMIN PANEL UCHUN) YUBORISH 🟢
+    const apiUrl = "https://yusufkahan.pythonanywhere.com/api/record";
+    fetch(apiUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            user_id: userId,
+            first_name: userName,
+            username: usernameTag,
+            score: recordScore
+        })
+    }).catch(err => console.log(err));
+}
+
+function rectIntersect(r1, r2) { return !(r2.x > r1.x + r1.w || r2.x + r2.w < r1.x || r2.y > r1.y + r1.h || r2.y + r2.h < r1.y); }
+function jump() { initAudio(); playSfx('jump'); bird_vel = JUMP; spawn_particles(BIRD_X, bird_y, C.neon_b, 8, {vy: rand(1,3)}); }
+function resetGame() { bird_y = H/2; bird_vel = 0; pipes = []; score = 0; combo = 0; speed = BASE_SPEED; last_p = performance.now() - PIPE_INTERVAL; g_off = 0; inv_frames = 0; flash_timer = 0; particles = []; floats = []; }
+function new_pipe() { pipes.push({x: W + 20, top_h: randint(90, H - GH - GAP - 90), scored: false}); }
+function check_hit() {
+    let br = {x: BIRD_X-16, y: bird_y-11, w: 32, h: 22};
+    if (bird_y + 14 >= H - GH || bird_y - 14 <= 0) return true;
+    for (let p of pipes) {
+        let cap_off = 7, r1 = {x: p.x - cap_off, y: 0, w: PIPE_W + 14, h: p.top_h}, r2 = {x: p.x - cap_off, y: p.top_h + GAP, w: PIPE_W + 14, h: H};
+        if (rectIntersect(br, r1) || rectIntersect(br, r2)) return true;
+    }
+    return false;
+}
+
+window.addEventListener("keydown", (e) => {
+    if (e.code === "Space" || e.code === "ArrowUp" || e.key === "w" || e.key === "W") { e.preventDefault(); if (state === "start") { state = "play"; jump(); } else if (state === "play") jump(); }
+    if (state === "over" && (e.key === "r" || e.key === "R")) { resetGame(); state = "play"; jump(); }
+});
+window.addEventListener("touchstart", (e) => { if (state === "start") { state = "play"; jump(); } else if (state === "play") jump(); else if (state === "over") { resetGame(); state = "play"; jump(); } });
+
+let _pulse = 0;
+function loop(timestamp) {
+    time_ticks++;
+    if (state === "play") {
+        bird_vel += GRAVITY; bird_y += bird_vel;
+        if (inv_frames > 0) inv_frames--; if (flash_timer > 0) flash_timer--;
+        if (timestamp - last_p >= Math.max(800, PIPE_INTERVAL - score*8)) { new_pipe(); last_p = timestamp; }
+        pipes.forEach(p => {
+            p.x -= speed;
+            if (!p.scored && p.x + PIPE_W < BIRD_X) {
+                p.scored = true; playSfx('score'); score++; combo++; flash_timer = 20;
+                speed = BASE_SPEED + Math.floor(score/5) * SPEED_INC; spawn_particles(BIRD_X, bird_y, C.neon_y, 18);
+                if (combo >= 3) {
+                    let msgs = {3: "TRIPLE!", 5: "x5 STREAK!", 7: "INSANE!", 10: "GODLIKE!!"};
+                    let msg = msgs[combo] || `x${combo}!`; let col = combo >= 7 ? C.neon_p : C.neon_g;
+                    floats.push(new FloatText(BIRD_X, bird_y - 40, msg, col)); trigger_shake(4, 8);
+                }
+            }
+        });
+        pipes = pipes.filter(p => p.x > -100); g_off = (g_off + speed) % 32;
+
+        if (check_hit() && inv_frames === 0) {
+            playSfx('hit');
+            gamesPlayed++; localStorage.setItem("neobird_games_played", gamesPlayed);
+            
+            if (score > best) {
+                best = score; localStorage.setItem("neobird_best", best);
+                if (best > 5) sendScoreToTelegram(best); 
+            }
+            combo = 0; trigger_shake(14, 25);
+            spawn_explosion(BIRD_X, bird_y, C.neon_r, 40); spawn_explosion(BIRD_X, bird_y, C.neon_y, 20);
+            state = "over";
+        }
+    }
+    update_particles(); floats.forEach(f => f.update()); floats = floats.filter(f => f.life > 0);
+    if (shake_timer > 0) shake_timer--;
+
+    let {x: ox, y: oy} = get_shake();
+    ctx.fillStyle = rgb(C.bg0); ctx.fillRect(0, 0, W, H);
+    ctx.save(); ctx.translate(ox, oy);
+    ctx.drawImage(bgCanvas, 0, 0); draw_stars(ctx);
+    ctx.fillStyle = "rgba(0,0,0,0.15)"; for (let y = 0; y < H; y += 3) ctx.fillRect(0, y, W, 1);
+    pipes.forEach(p => draw_pipe(ctx, p.x, p.top_h, GAP, speed)); draw_ground(ctx, g_off); draw_particles(ctx);
+
+    if (state === "start") _draw_start();
+    else {
+        draw_bird(ctx, BIRD_X, bird_y, bird_vel, combo, inv_frames); floats.forEach(f => f.draw(ctx));
+        _draw_hud(score, combo, speed, flash_timer); if (state === "over") _draw_gameover(score, best);
+    }
+    ctx.restore(); 
+    requestAnimationFrame(loop);
+}
+
+function _draw_start() {
+    _pulse += 0.05; glow_text(f_title, "NEOBIRD", C.neon_r, W/2, 130, 20);
+    ctx.font = f_sm; ctx.fillStyle = rgb(C.neon_b); ctx.textAlign = "center"; ctx.fillText("NEON EDITION", W/2, 205);
+    let bob = Math.sin(_pulse * 2) * 8; draw_bird(ctx, W/2, H/2 - 40 + bob, Math.sin(_pulse)*3, 0);
+    if (Math.floor(_pulse * 3) % 2 === 0) { ctx.font = f_mid; ctx.fillStyle = rgb(C.neon_y); ctx.fillText("Ekranga bosing", W/2, H/2 + 40); }
+
+    let boxY = H/2 + 80; ctx.fillStyle = "rgba(4, 6, 20, 0.8)"; ctx.fillRect(W/2 - 130, boxY, 260, 75);
+    ctx.strokeStyle = rgb(C.neon_p); ctx.lineWidth = 1.5; setGlow(C.neon_p, 10); ctx.strokeRect(W/2 - 130, boxY, 260, 75); clearGlow();
+    ctx.font = f_xs; ctx.textAlign = "center"; ctx.fillStyle = rgb(C.neon_y); ctx.fillText(`🏆 BEST SCORE: ${best}`, W/2, boxY + 30);
+    ctx.fillStyle = rgb(C.neon_b); ctx.fillText(`🎮 O'YNALDI: ${gamesPlayed} MARTA`, W/2, boxY + 55);
+    ctx.font = f_xs; ctx.fillStyle = "rgb(60,80,120)"; ctx.fillText("v2.1  |  HTML5 JS ENGINE", W/2, H - GH - 20);
+}
+
+function _draw_hud(score, combo, speed, flash) {
+    let col = flash > 0 ? C.white : C.neon_y; glow_text(f_big, score.toString(), col, W/2, 45, 10);
+    let t = Math.min(1.0, (speed - BASE_SPEED) / 4.0), bar_w = 160 * t, bar_x = W/2 - 80;
+    ctx.fillStyle = "rgb(20,40,80)"; ctx.fillRect(bar_x, H - GH - 28, 160, 10);
+    if (bar_w > 0) {
+        ctx.fillStyle = rgb([Math.floor(C.neon_g[0]*(1-t) + C.neon_r[0]*t), Math.floor(C.neon_g[1]*(1-t) + C.neon_r[1]*t), Math.floor(C.neon_g[2]*(1-t) + C.neon_r[2]*t)]);
+        ctx.fillRect(bar_x, H - GH - 28, bar_w, 10);
+    }
+    ctx.font = f_xs; ctx.fillStyle = "rgb(100,140,200)"; ctx.textAlign="left"; ctx.fillText(`SPEED ${speed.toFixed(1)}`, bar_x, H - GH - 34);
+    if (combo >= 2) for (let i = 0; i < Math.min(combo, 10); i++) { ctx.fillStyle = i < combo ? rgb(C.neon_y) : "rgb(30,50,80)"; ctx.fillRect(12 + i*16, 12, 12, 12); }
+}
+
+function _draw_gameover(score, best) {
+    ctx.fillStyle = "rgba(0,0,0,0.65)"; ctx.fillRect(0, 0, W, H);
+    let pw = 360, ph = 280, px = W/2 - pw/2, py = H/2 - ph/2;
+    ctx.strokeStyle = rgb(C.neon_r); ctx.lineWidth = 2; setGlow(C.neon_r, 20); ctx.strokeRect(px, py, pw, ph); clearGlow();
+    glow_text(f_big, "Game Over", C.neon_r, W/2, py + 45, 15);
+    ctx.fillStyle = rgb(C.neon_r, 0.4); ctx.fillRect(px + 20, py + 78, pw - 40, 2);
+    ctx.font = f_mid; ctx.textAlign = "center"; ctx.fillStyle = rgb(C.white); ctx.fillText(`SCORE  ${score}`, W/2, py + 115);
+    ctx.fillStyle = rgb(C.neon_y); ctx.fillText(`BEST   ${best}`, W/2, py + 158);
+    if (score === best && score > 0) { ctx.font = f_sm; ctx.fillStyle = rgb(C.neon_y); ctx.fillText("★ NEW RECORD ★", W/2, py + 200); }
+    ctx.strokeStyle = rgb(C.neon_g); setGlow(C.neon_g, 10); ctx.strokeRect(W/2 - 130, py + ph - 66, 260, 48); clearGlow();
+    ctx.font = f_mid; ctx.fillStyle = rgb(C.neon_g); ctx.fillText("Ekranga bosing", W/2, py + ph - 32);
+}
+
+// 🟢 O'YIN BOSHLANIShIDAN OLDIN TEXNIK REJIMNI TEKSHIRISH 🟢
+async function checkMaintenanceAndStart() {
+    try {
+        let res = await fetch("https://yusufkahan.pythonanywhere.com/api/status");
+        let data = await res.json();
+        
+        if (data.maintenance) {
+            // Agar texnik rejim yoniq bo'lsa, o'yin o'rniga shuni ko'rsatadi
+            ctx.fillStyle = rgb(C.bg0); 
+            ctx.fillRect(0, 0, W, H);
+            
+            glow_text(f_big, "🛠 TEXNIK REJIM 🛠", C.neon_r, W/2, H/2 - 40, 20);
+            
+            ctx.font = f_mid; ctx.fillStyle = rgb(C.white); ctx.textAlign = "center";
+            ctx.fillText("Hozirda yangilanish ketyapti", W/2, H/2 + 20);
+            
+            ctx.font = f_sm; ctx.fillStyle = rgb(C.neon_b);
+            ctx.fillText("Iltimos, keyinroq qayta kiring!", W/2, H/2 + 60);
+        } else {
+            // Agar rejim o'chiq bo'lsa, o'yin oddiy davom etadi
+            requestAnimationFrame(loop);
+        }
+    } catch(e) {
+        // Agar xatolik bo'lsa (server ishlamay qolsa), o'yin baribir yonaveradi
+        requestAnimationFrame(loop);
+    }
+}
+
+// O'yinni tekshiruv orqali ishga tushirish
+checkMaintenanceAndStart();
+</script>
+</body>
+</html>
